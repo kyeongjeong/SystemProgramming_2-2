@@ -27,26 +27,26 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-
+#define _GNU_SOURCE
+#define FNM_CASEFOLD  0x10
 #define MAX_LENGTH 1000
-#define TITLE_HTML "html_ls.html"
+#define DIR_FILE_LIST "html_ls.html"
 #define URL_LEN 256
 #define BUFSIZE 1024
 #define PORTNO 40000
 
+
+void sendResponse(char* url, char* response_header, int isNotStart, int client_fd);
 void listDirFiles(int a_hidden, int l_format, int S_size, int r_reverse, int h_readable, char* filename, FILE *file);
-void printFileInfo(char* fileName, FILE *file, int l_format, int h_readable);
 void getAbsolutePath(char *inputPath, char *absolutePath);
 void joinPathAndFileName(char* path, char* Apath, char* fileName);
 void sortByNameInAscii(char **fileList, int fileNum, int start, int r_reverse);
-void sortByFileSize(char **fileList, char * dirPath, int fileNum, int start, int r_reverse);
 void printPermissions(mode_t mode, FILE *file);
 void printType(struct stat fileStat, FILE *file);
 void findColor(char* fileName, char* color);
 void printAttributes(struct stat fileStat, FILE *file, int h_readable, char *color);
 int compareStringUpper(char* fileName1, char* fileName2);
-int wildcard(FILE *file, char* patternName, int isPrint);
-int loadHTML();
+int writeHTMLFile(char* url);
 
 ///////////////////////////////////////////////////////////////////////////////////////
 // main                                                                              //
@@ -59,137 +59,7 @@ int loadHTML();
 //          and sorts the directories alphabetically.                                //
 //          is a file or directory. It checks whether the file or directory exists   //
 ///////////////////////////////////////////////////////////////////////////////////////
-int main(int argc, char* argv[]) {
-    
-    DIR *dirp; //DIR 포인터
-    struct dirent *dir; //dirent 구조체
-    struct stat st; //파일 속성 
-    int a_hidden = 0, l_format = 0, S_size = 0, r_reverse = 0, h_readable = 0;  // 각 옵션 포함 여부(0: 미포함, 1: 포함)
-    int opt; //옵션 정보
-    int isNotWild[MAX_LENGTH] = {0, }; //와일드카드 포함 여부(0: 포함, 1: 미포함)
-    int sortflag = 0; //정렬 교정을 위한 임시 변수
-    char Apath[MAX_LENGTH] = {'\0', }; //working directory의 절대 경로
-    char title[MAX_LENGTH] = "html_ls.html"; // html 문서
-
-    FILE *file = fopen(TITLE_HTML, "w"); //html 파일 생성 및 오픈
-
-    fprintf(file, "<!DOCTYPE html>\n<html>\n<head>\n"); //title 생성
-    getAbsolutePath(title, Apath); //html 문서의 절대 경로 받아오기
-    fprintf(file, "<title>%s</title>\n</head>\n<body>\n", Apath); //절대경로로 title 설정
-
-    while((opt = getopt(argc, argv, "alhSr")) != -1) { //옵션 정보 판별하기
-        switch (opt)
-        {
-        case 'l': //옵션에 -l 포함한 경우
-            l_format = 1; //l 플래그 세우기
-            break;
-        case 'a': //옵션에 -a 포함한 경우
-            a_hidden = 1; //a 플래그 세우기
-            break;
-        case 'S': //옵션에 -S 포함한 경우
-            S_size = 1; //S 플래그 세우기
-            break;
-        case 'r': //옵션에 -r 포함한 경우
-            r_reverse = 1; //r 플래그 세우기
-            break;
-        case 'h': //옵션에 -h 포함한 경우
-            h_readable = 1; //h 플래그 세우기
-        case '?': //unknown
-            break;
-        default: //defalut
-            break;
-        }
-    }
-
-    if((a_hidden == 0) && (l_format == 0) && (S_size == 0) && (r_reverse == 0) && (h_readable == 0)) //옵션이 없는 경우
-        optind = 0;
-
-    if(optind >= 2) //-al, -la의 경우에도 optind는 1
-        optind = 1;
-
-    fprintf(file, "<h1>Welcome to System Programming Http</h1>\n<br>\n"); //header 작성
-
-    if((argc-optind) == 1) { //인자가 없는 경우(옵션은 있을수도, 없을수도 있다)
-        char currentPath[10] = "."; //현재 경로
-        listDirFiles(a_hidden, l_format, S_size, r_reverse, h_readable, currentPath, file); //현재 디렉토리 하위 파일 출력
-    }
-
-    else { //인자로 경로를 한 개 이상 받은 경우
-        for(int i = optind; i < argc; i++) { 
-            //1. 디렉토리가 아님 2. 파일 안열림 3. 옵션이 아님 => 와일드카드거나, 존재하지 않거나
-            if ((opendir(argv[i]) == NULL) && (stat(argv[i], &st)==-1) && (argv[i][0] != '-')) { 
-                
-                if(wildcard(file, argv[i], 0) == 0) { //와일드카드가 아니라면 => 존재하지 않는 파일
-                    fprintf(file, "<b>cannot access %s: No such file or directory</b><br>\n", argv[i]); //error 문구 출력
-                    isNotWild[i] = 1; //와일드카드가 아님을 저장
-                }
-                else //와일드카드라면
-                    sortflag = 1; //sortflag 지정
-            }
-        }
-
-        fprintf(file, "<br>\n");
-        sortByNameInAscii(argv, argc, (optind + sortflag), r_reverse); //파일 및 디렉토리들을 아스키코드순으로 정렬
-
-        for (int i = optind; i < argc; i++) { //인자 수만큼 반복
-            if ((opendir(argv[i]) == NULL) && (stat(argv[i], &st) == -1) && (argv[i][0] != '-')) { //1. 디렉토리가 아님 2. 파일 안열림 3. 옵션이 아님 => 와일드카드거나, 존재하지 않거나
-                if (isNotWild[i] == 0) //와일드카드라면
-                    wildcard(file, argv[i], 1); //와일드카드 출력
-                else
-                    continue; //아니라면 건너뛰기
-            }
-        }
-
-        char path[MAX_LENGTH]; //경로를 받아올 변수
-        getcwd(path, MAX_LENGTH); //현재 경로 받아오기
-
-        if (S_size == 1) { //-S 옵션이 있는 경우(사이즈별로 출력)
-
-            char* temp[MAX_LENGTH]; //argv 배열의 내용을 복사해 파일 크기로 정렬할 배열
-            for (int i = 0; i < argc; i++) //인자 수만큼 반복하면서
-                temp[i] = argv[i]; //temp에 argv 내용 복사
-
-            sortByFileSize(temp, path, argc, optind, r_reverse); //파일 사이즈별로 정렬
-
-            for (int i = optind; i < argc; i++) { //인자 수만큼 반복
-
-                // 1. 존재하는 파일임(옵션 x) 2. 디렉토리가 아님 3. run파일이 아님 => 파일정보 출력
-                if ((stat(temp[i], &st) != -1) && (!S_ISDIR(st.st_mode)) && (i != 0) && (strcmp(temp[i], TITLE_HTML)!=0)) 
-                    printFileInfo(temp[i], file, l_format, h_readable); //파일 정보 출력 함수
-            }
-            fprintf(file, "</table><br>\n"); //테이블 닫기
-        }
-
-        else{ //-S 옵션이 없는경우(아스키코드순으로 출력)
-
-            for (int i = optind; i < argc; i++) { //인자 수만큼 반복
-                
-                // 1. 존재하는 파일임(옵션 x) 2. 디렉토리가 아님 3. run파일이 아님 => 파일정보 출력
-                if ((stat(argv[i], &st) != -1) && (!S_ISDIR(st.st_mode)) && (i != 0) && (strcmp(argv[i], TITLE_HTML)!=0))
-                    printFileInfo(argv[i], file, l_format, h_readable); // 파일정보 출력                
-            }
-            fprintf(file, "</table><br>\n"); //테이블 닫기
-        }
-
-        for(int i = optind; i < argc; i++) { //인자 수만큼 반복
-            if((stat(argv[i], &st) != -1) && S_ISDIR(st.st_mode)) { //열리는 디렉토리인 경우
-
-                listDirFiles(a_hidden, l_format, S_size, r_reverse, h_readable, argv[i], file); //디렉토리 하위 파일정보 출력
-                if(l_format == 0) //-l 옵션이 없는 경우
-                    fprintf(file, "<br>\n"); //입력받은 경로 간 줄바꿈                    
-            }
-        }
-    }
-
-    fprintf(file, "</body></html>");
-    closedir; //디렉토리 close
-    fclose(file);
-
-    loadHTML();
-    return 0; //프로그램 종료
-}
-
-int loadHTML() {
+int main() {
     
     struct sockaddr_in server_addr, client_addr;
     int socket_fd, client_fd;
@@ -197,17 +67,10 @@ int loadHTML() {
     unsigned int len;
     int opt = 1;
     int count = 0;
+    int isNotStart = 0;
     char ch;
-
-    FILE *file = fopen(TITLE_HTML, "r");   
-    while((ch = fgetc(file)) != EOF)     
-        count++;
-
-    char *response_message = (char*) malloc(sizeof(char) * (count+1));
-
-    rewind(file);
-    fread(response_message, sizeof(char), count+1, file);
-    fclose(file);
+    char Apath[MAX_LENGTH] = {'\0', }; //working directory의 절대 경로
+    char title[MAX_LENGTH] = "html_ls.html"; // html 문서
 
     if((socket_fd = socket(PF_INET, SOCK_STREAM, 0)) < 0) {
         printf("Server : Can't open stream socket\n");
@@ -237,6 +100,7 @@ int loadHTML() {
         char url[URL_LEN] = {0, };
         char method[20] = {0, };
         char* tok = NULL;
+        FILE *file;
 
         len = sizeof(client_addr);
         client_fd = accept(socket_fd, (struct sockaddr*)&client_addr, &len);
@@ -261,133 +125,119 @@ int loadHTML() {
             strcpy(url, tok);
         }
 
-        sprintf(response_header, "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n");
-        write(client_fd, response_header, strlen(response_header));
-        write(client_fd, response_message, strlen(response_message));
-        
+        if(strcmp(url, "/favicon.ico") == 0)
+            continue;
+        sendResponse(url, response_header, isNotStart, client_fd);
+
+        isNotStart = 1;
         printf("[%s : %d] client was disconnected\n", inet_ntoa(inet_clinet_address), client_addr.sin_port);
-        close(client_fd);
+        close(client_fd);       
     }
     close(socket_fd);
     return 0;
 }
 
-///////////////////////////////////////////////////////////////////////////////////////
-// wildcard                                                                          //
-// --------------------------------------------------------------------------------- //
-// Input: char* patternName -> The wildcard pattern to be checked                    //
-//        int isPrint -> Determination of whether to execute the output section or   //
-//                       not                                                         //
-// output:                                                                           //
-// purpose: Prints sub-files in the directory specified by the filename argument     //
-//          based on the options                                                     //
-///////////////////////////////////////////////////////////////////////////////////////
-int wildcard(FILE *file, char* patternName, int isPrint) {
-    
-    DIR *dirp; //dir 포인터
+void sendResponse(char* url, char* response_header, int isNotStart, int client_fd) {
+
+    FILE *file;
+    DIR *dirp; //DIR 포인터
     struct dirent *dir; //dirent 구조체
-    int wildFlag = 0, fileNum = 0, dirNum = 0; //와일드카드의 유무, 파일 개수, 디렉토리 개수
-    char *fileList[MAX_LENGTH], *dirList[MAX_LENGTH],  *dirList2[MAX_LENGTH]; //파일 리스트, 디렉토리 리스트, 디렉토리 하위 디렉토리 리스트
-    char wildPath[MAX_LENGTH] = {'\0', }, dirPath[MAX_LENGTH] = {'\0', }; //현재 절대 경로, 디렉토리 하위 디렉토리의 절대 경로
-    char APatternName[MAX_LENGTH] = {'\0', }; //개선된 패턴
+    int count = 0, isNotFound = 0;
+    char ch;
+    char file_extension[10]; // 파일 확장자를 저장할 배열
+    char content_type[30];   // MIME TYPE을 저장할 배열
 
-    getAbsolutePath(patternName, wildPath); //현재 디렉토리 절대경로 받기
-    getAbsolutePath(patternName, APatternName); //현재 디렉토리 절대경로 받기
+    if(isNotStart == 0)
+        isNotFound = writeHTMLFile(url);
+    
+    if (isNotFound == 1) {
 
-    char *lastSlash = strrchr(wildPath, '/'); // 가장 마지막의 '/'를 찾기
-    if (lastSlash != NULL)
-        *lastSlash = '\0'; // '/'를 null 문자로 바꿔 문자열을 종료
+        char response_message[MAX_LENGTH];
+        sprintf(response_message, "<h1>Not Found</h1><br>"
+                                  "The request URL %s was not found on this server<br>"
+                                  "HTTP 404 - Not Page Found", url);
+        sprintf(response_header, "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n");
+
+        write(client_fd, response_header, strlen(response_header));
+        write(client_fd, response_message, strlen(response_message));
+        return;
+    }
+
+    if ((fnmatch("*.jpg", url, FNM_CASEFOLD) == 0) || (fnmatch("*.png", url, FNM_CASEFOLD) == 0) || (fnmatch("*.jpeg", url, FNM_CASEFOLD) == 0)) 
+        strcpy(content_type, "image/*");
+
+    else {
+        char *dot = strrchr(url, '.');
+        if (dot && dot != url)
+            strcpy(file_extension, dot + 1);
+
+        char dirPath[MAX_LENGTH] = {'\0', };
+        getAbsolutePath(url, dirPath);
+
+        if((opendir(dirPath) != NULL) || (isNotStart == 0)) {
+            strcpy(content_type, "text/html");  
+            writeHTMLFile(url);  
+        }
+        else
+            strcpy(content_type, "text/plain");
+    }
+
+    if (strcmp(content_type, "text/html") == 0)
+        file = fopen(DIR_FILE_LIST, "r");
+    else if(strcmp(content_type, "text/plain") == 0)
+        file = fopen(url, "r");
     else
-        strcpy(wildPath, getcwd(wildPath, MAX_LENGTH)); //현재 위치 받아오기
+        file = fopen(url, "rb");
 
-    dirp = opendir(wildPath); // 절대경로로 opendir
+    while ((ch = fgetc(file)) != EOF)
+        count++;
 
-    while ((dir = readdir(dirp)) != NULL) { //파일 읽어오기 
+    char *response_message = (char *)malloc(count+1);
 
-        char fileName[MAX_LENGTH] = {'\0', }; //파일이름 받아올 배열 선언 및 초기화
-        joinPathAndFileName(fileName, wildPath, dir->d_name);
+    printf("%s: %d -> %ld\n", url, count, strlen(response_message));
+    rewind(file);
+    fread(response_message, sizeof(char), count, file);
+    fclose(file);
 
-        //와일드카드와 일치하는 디렉토리인 경우
-        if((fnmatch(APatternName, fileName, 0) == 0) && (dir->d_name[0] != '.') && (dir->d_type == DT_DIR)) {
-            dirList[dirNum] = dir->d_name; //dirList에 추가
-            dirNum++; //디렉토리 숫자 증가
-            wildFlag = 1; //인자가 와일드카드임을 표시
-        }
+    sprintf(response_header, "HTTP/1.0 200 OK\r\nContent-Type: %s\r\n\r\n", content_type);
+    write(client_fd, response_header, strlen(response_header));
+    write(client_fd, response_message, strlen(response_message));
+}
 
-        // 와일드카드와 일치하는 디렉토리 외 파일인 경우
-        else if((fnmatch(APatternName, fileName, 0) == 0) && (dir->d_name[0] != '.')) {
-            if (strcmp(dir->d_name, TITLE_HTML) != 0) {
-                fileList[fileNum] = dir->d_name; //fileList에 추가
-                fileNum++; // 파일 숫자 증가
-                wildFlag = 1; // 인자가 와일드카드임을 표시
-            } 
-        }
+int writeHTMLFile(char* url) {
+    
+    DIR *dirp; //DIR 포인터
+    struct dirent *dir; //dirent 구조체
+    char Apath[MAX_LENGTH] = {'\0', }; //working directory의 절대 경로
+    char title[MAX_LENGTH] = "html_ls.html"; // html 문서
+    
+    FILE *file = fopen(DIR_FILE_LIST, "w"); //html 파일 생성 및 오픈
+
+    fprintf(file, "<!DOCTYPE html>\n<html>\n<head>\n"); //title 생성
+    getAbsolutePath(title, Apath); //html 문서의 절대 경로 받아오기
+    fprintf(file, "<title>%s</title>\n</head>\n<body>\n", Apath); //절대경로로 title 설정
+
+    if(url[1] == '\0') {
+
+        fprintf(file, "<h1>Welcome to System Programming Http</h1>\n<br>\n"); //header 작성
+        char currentPath[10] = "."; //현재 경로
+        listDirFiles(0, 1, 0, 0, 0, currentPath, file); //현재 디렉토리 하위 파일 출력
     }
 
-    if(wildFlag == 0) //만약 와일드카드가 아니라면
-        return wildFlag; //0을 반환    
+    else {       
+        char dirPath[MAX_LENGTH] = {'\0', };
 
-    if (isPrint == 1) { //출력이 필요한 경우
+        fprintf(file, "<h1>System Programming Http</h1>\n<br>\n"); //header 작성
 
-        sortByNameInAscii(fileList, fileNum, 0, 0); //아스키코드순으로 파일 정렬
-        sortByNameInAscii(dirList, dirNum, 0, 0); //아스키코드순으로 디렉토리 정렬
+        getAbsolutePath(url, dirPath);
+        if(opendir(dirPath) == NULL)
+            return 1;
 
-        rewinddir(dirp); //dirp를 초기화
-        if(fileNum != 0) 
-            fprintf(file, "<table border=\"1\">\n<tr>\n<th>Name</th>\n</tr>\n");
-
-        for (int i = 0; i < fileNum; i++) {//파일리스트만큼 반복하면서 
-            
-            char filePath[MAX_LENGTH]; //파일의 절대 경로
-            joinPathAndFileName(filePath, wildPath, fileList[i]); //절대 경로와 파일이름 붙이기
-
-            char color[20]; //파일의 색
-            findColor(filePath, color); //파일 색 찾기
-
-            char printName[MAX_LENGTH] = {'\0', }; //출력할 이름
-            strcpy(printName, patternName);
-            lastSlash = strchr(printName, '/'); //마지막에 있는 '/' 없애기
-            if (lastSlash != NULL)
-                *lastSlash = '\0'; // '/'를 null 문자로 바꿔 문자열을 종료
-            joinPathAndFileName(printName, printName, fileList[i]); //입력받은 패턴에 따라 출력할 이름 설정
-
-            fprintf(file, "<tr style=\"%s\"><td><a href=%s>%s</a></td></tr>\n", color, filePath, printName); //파일명 출력
-        }
-        fprintf(file, "</table>\n<br>\n");
-
-        for (int i = 0; i < dirNum; i++) { //디렉토리 개수만큼 반복
-
-            char dirPath[MAX_LENGTH]; //디렉토리 경로 저장 변수 선언 및 초기화
-            joinPathAndFileName(dirPath, wildPath, dirList[i]);           
-
-            dirp = opendir(dirPath); //dirPath로 open
-            int dirNum2 = 0; //디렉토리 하위 파일들의 개수
-            while ((dir = readdir(dirp)) != NULL) { //파일 읽어오기
-
-                if ((dir->d_name[0] != '.') && (strcmp(dir->d_name, TITLE_HTML) != 0)) { //히든파일이 아니라면
-                    dirList2[dirNum2] = dir->d_name; //하위 파일명들 저장
-                    dirNum2++; //하위 파일들의 개수 세기
-                }
-            }
-
-            
-            if(dirNum2 != 0) { //디렉토리 내 하위 파일이 존재하는 경우
-
-                fprintf(file, "<b>Directory path: %s<b>\n", dirPath); //파일 경로 출력
-                sortByNameInAscii(dirList2, dirNum2, 0, 0); // 하위 파일들도 아스키코드 순으로 정렬
-                fprintf(file, "<table border=\"1\">\n<tr>\n<th>Name</th>\n</tr>\n"); //테이블 설정
-                
-                for (int j = 0; j < dirNum2; j++) { // 파일 개수만큼 반복하면서
-
-                    char fileLink[MAX_LENGTH] = {'\0'}; //하이퍼링크로 설정할 경로
-                    joinPathAndFileName(fileLink, dirPath, dirList2[j]); //절대경로와 파일 이름 붙이기
-                    fprintf(file, "<tr><td><a href=%s>%s</a></td></tr>\n", fileLink, dirList2[j]); // 파일명 출력
-                }
-                fprintf(file, "</table>\n<br>\n");
-            }
-        }
+        listDirFiles(0, 1, 0, 0, 0, url, file);
     }
-    return wildFlag; //와일드카드 여부 반환
+
+    fclose(file);
+    return 0;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////
@@ -433,16 +283,11 @@ void listDirFiles(int a_hidden, int l_format, int S_size, int r_reverse, int h_r
         
         fileList[i] = (char*)malloc(sizeof(char) * 300); //동적 할당
         dir = readdir(dirp);
-        if((strcmp(fileList[i], TITLE_HTML) != 0)) //html 실행 파일이 아니라면
+        if((strcmp(fileList[i], DIR_FILE_LIST) != 0)) //html 실행 파일이 아니라면
             strcpy(fileList[i], dir->d_name); //fileList에 파일명 저장
     }
 
     sortByNameInAscii(fileList, fileNum, 0, r_reverse); //아스키 코드순으로 정렬
-    if (S_size == 1) //S 옵션 존재 시
-        sortByFileSize(fileList, dirPath, fileNum, 0, r_reverse); //파일 사이즈로 재정렬
-    else
-        sortByNameInAscii(fileList, fileNum, 0, r_reverse); //fileList를 알파벳 순으로 sort(대소문자 구분 x)
-
     fprintf(file, "<b>Directory path: %s</b><br>\n", dirPath); //파일 경로 출력
     
     if(l_format == 1) //옵션 -l이 포함된 경우
@@ -486,48 +331,6 @@ void listDirFiles(int a_hidden, int l_format, int S_size, int r_reverse, int h_r
             fprintf(file, "</tr>");
     }
     fprintf(file, "</table>\n<br>\n");
-}
-
-///////////////////////////////////////////////////////////////////////////////////////
-// printFileInfo                                                                     //
-// --------------------------------------------------------------------------------- //
-// Input: char* l_format -> option -l                                                //
-//        int filename -> file name that provided                                    //
-// output:                                                                           //
-// purpose: Prints the attributes of the file based on the presence or absence of    //
-//          the -l option, given the filename argument.                              //
-///////////////////////////////////////////////////////////////////////////////////////
-void printFileInfo(char* fileName, FILE *file, int l_format, int h_readable) {
-    
-    struct stat fileStat; //파일 속성정보 받아올 변수
-    char timeBuf[80]; //파일 시간정보 받아올 변수
-    char filePath[MAX_LENGTH]; //파일 경로 저장할 변수
-
-    fprintf(file, "<table border=\"1\">\n<tr>\n<th>Name</th>\n"); // 테이블 생성
-    if (l_format == 1) { //-l 옵션이 존재할 경우
-        fprintf(file, "<th>Permissions</th>\n");        // 권한 열 생성
-        fprintf(file, "<th>Link</th>\n");               // 링크 열 생성
-        fprintf(file, "<th>Owner</th>\n");              // 소유자 열 생성
-        fprintf(file, "<th>Group</th>\n");              // 소유 그룹 열 생성
-        fprintf(file, "<th>Size</th>\n");               // 사이즈 열 생성
-        fprintf(file, "<th>Last Modified</th>\n</tr>"); // 마지막 수정날짜 열 생성
-    }
-    else
-        fprintf(file, "</tr>"); // 그냥 한 행 닫기
-
-    getAbsolutePath(fileName, filePath); //절대경로 찾기
-    stat(filePath, &fileStat); //절대경로로 파일 속성 받기
-
-    char color[20] = {'\0', }; //파일의 유형에 따른 색 저장할 배열
-    findColor(filePath, color); //색을 찾을 함수 호출
-
-    fprintf(file, "<tr style=\"%s\">\n", color); //파일 색상 결정
-    fprintf(file, "<td><a href=%s>%s</a></td>", filePath, fileName); //파일 이름 및 링크 출력
-
-    if(l_format == 1) //옵션 -l이 포함된 경우 파일 속성 출력
-        printAttributes(fileStat, file, h_readable, color);
-    else
-        fprintf(file, "</tr>\n");
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////
@@ -654,44 +457,6 @@ void sortByNameInAscii(char **fileList, int fileNum, int start, int r_reverse)
             for(int k = strlen(fileList[i]); k >= 0; k--) //파일 길이만큼 반복
                 fileList[i][k+1] = fileList[i][k]; //뒤로 한 칸씩 보내기
             fileList[i][0] = '.'; //파일명 가장 앞에 . 다시 추가
-        }
-    }
-}
-
-///////////////////////////////////////////////////////////////////////////////////////
-// sortByFileSize                                                                    //
-// --------------------------------------------------------------------------------- //
-// Input: char **fileList -> An array containing file names                          //
-//        char *dirPath -> path of file                                              //
-//        int fileNum -> size of file                                                //
-//        int start -> where to start to sort files                                  //
-//        int r_reverse -> reverse sort flag                                         //
-// output:                                                                           //
-// purpose: Comparing two strings based on uppercase letters to determine which one  //
-//          is greater.                                                              //
-///////////////////////////////////////////////////////////////////////////////////////
-void sortByFileSize(char **fileList, char *dirPath, int fileNum, int start, int r_reverse) {
-    
-    struct stat fileStat1, fileStat2; //stat of files
-
-    for (int i = start; i < (fileNum - 1); i++) { //bubble sort
-        for (int j = i + 1; j < fileNum; j++) { 
-            
-            char accessFilename1[MAX_LENGTH]; //first file name
-            joinPathAndFileName(accessFilename1, dirPath, fileList[i]);
-            stat(accessFilename1, &fileStat1); //filestat open
-
-            char accessFilename2[MAX_LENGTH]; //second file name
-            joinPathAndFileName(accessFilename2, dirPath, fileList[j]);
-            stat(accessFilename2, &fileStat2); //filestat open
-
-            if (((fileStat1.st_size < fileStat2.st_size) && (r_reverse == 0)) || ((fileStat1.st_size > fileStat2.st_size) && (r_reverse == 1))) { //뒤의 문자열이 더 크다면
-                
-                char *temp = fileList[j]; // 문자열 위치 바꾸기
-                for (int k = j; k > i; k--)
-                    fileList[k] = fileList[k - 1]; //앞으로 한 칸씩 당기고
-                fileList[i] = temp; //첫 번째 문자열이 제일 뒤 칸으로 가기
-            }
         }
     }
 }
