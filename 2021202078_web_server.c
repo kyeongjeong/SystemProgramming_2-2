@@ -1,15 +1,23 @@
 ///////////////////////////////////////////////////////////////////////////////////////
-// File Name    : 2021202078_html_ls.c                                               //
-// Date         : 2023/04/19                                                         //
+// File Name    : 2021202078_web_server.c                                            //
+// Date         : 2023/05/03                                                         //
 // OS           : Ubuntu 16.04.5 Desktop 64bits                                      //
 // Author       : Choi Kyeong Jeong                                                  //
 // Student ID   : 2021202078                                                         //
 // --------------------------------------------------------------------------------- //
-// Title        : System Programming Assignment 2-1                                  //
-// Descriptions : To output the results of Assignment 1-3 to an HTML file, with file //
-//                names linked and color differentiation based on file type, in a    //
-//                table format.                                                      //
+// Title        : System Programming Assignment 2-2                                  //
+// Descriptions : The results of Assignment 2-2 are transmitted to a web browser     //
+//                through a server in response to the client's requests. In this     //
+//                case, additional results should be sent depending on the directory //
+//                and file clicked.                                                  //
 ///////////////////////////////////////////////////////////////////////////////////////
+
+#define _GNU_SOURCE
+#define FNM_CASEFOLD  0x10
+#define MAX_LENGTH 1000
+#define URL_LEN 256
+#define BUFSIZE 1024
+#define PORTNO 40000
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,14 +35,6 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-#define _GNU_SOURCE
-#define FNM_CASEFOLD  0x10
-#define MAX_LENGTH 1000
-#define DIR_FILE_LIST "html_ls.html"
-#define URL_LEN 256
-#define BUFSIZE 1024
-#define PORTNO 40000
-
 
 void sendResponse(char* url, char* response_header, int isNotStart, int client_fd);
 void listDirFiles(int a_hidden, int l_format, int S_size, int r_reverse, int h_readable, char* filename, FILE *file);
@@ -51,193 +51,210 @@ int writeHTMLFile(char* url);
 ///////////////////////////////////////////////////////////////////////////////////////
 // main                                                                              //
 // --------------------------------------------------------------------------------- //
-// Input: char* argv[] -> Directory name or file name or option that the user enters //
-//        int argc -> The number of arguments and options                            //
+// Input:                                                                            //
 // output:                                                                           //
-// purpose: This program distinguishes between options and arguments provided by the //
-//          user, identifies the type of option, and determines whether the argument //
-//          and sorts the directories alphabetically.                                //
-//          is a file or directory. It checks whether the file or directory exists   //
+// purpose: Create a socket to ensure smooth communication between the server and    //
+//          client. Depending on the client's request, the server sends the          //
+//          corresponding results to the web browser, which includes exception       //
+//          handling for each error situation.                                       //
 ///////////////////////////////////////////////////////////////////////////////////////
 int main() {
     
-    struct sockaddr_in server_addr, client_addr;
-    int socket_fd, client_fd;
-    int len_out;
-    unsigned int len;
-    int opt = 1;
-    int count = 0;
-    int isNotStart = 0;
-    char ch;
-    char Apath[MAX_LENGTH] = {'\0', }; //working directory의 절대 경로
-    char title[MAX_LENGTH] = "html_ls.html"; // html 문서
+    struct sockaddr_in server_addr, client_addr; //서버 및 클라이언트의 주소
+    int socket_fd, client_fd; //소켓 및 클라이언트의 file descriptor
+    unsigned int len; //클라이언트 주소의 길이
+    int opt = 1; //소켓의 옵션 사용 설정
+    int isNotStart = 0; //클라이언트의 초기 요청인지 구분
 
-    if((socket_fd = socket(PF_INET, SOCK_STREAM, 0)) < 0) {
-        printf("Server : Can't open stream socket\n");
-        return 0;
+    if((socket_fd = socket(PF_INET, SOCK_STREAM, 0)) < 0) { //소켓 생성
+        printf("Server : Can't open stream socket\n"); //소켓 생성 실패 시
+        return 0; //프로그램 종료
     }
 
-    setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)); //소켓 옵션 설정
 
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    server_addr.sin_port = htons(PORTNO);
+    memset(&server_addr, 0, sizeof(server_addr)); //server_addr 구조체 초기화
+    server_addr.sin_family = AF_INET; //주소 체계를 IPv4로 설정
+    server_addr.sin_addr.s_addr = htonl(INADDR_ANY); //모든 IP 주소를 허용
+    server_addr.sin_port = htons(PORTNO); //포트 번호 설정
 
-    if(bind(socket_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        printf("Server : Can't bind local address\n");
-        return 0;
+    if(bind(socket_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) { //소켓에 IP 주소와 포트 번호 할당
+        printf("Server : Can't bind local address\n"); //소켓 할당 실패 시 
+        return 0; //프로그램 종료
     }
 
-    listen(socket_fd, 5);
+    listen(socket_fd, 5); //클라이언트의 연결 요청 대기
 
     while(1) {
         
-        struct in_addr inet_clinet_address;
-        char response_header[BUFSIZE] = {0, };
-        char buf[BUFSIZE] = {0, };
-        char tmp[BUFSIZE] = {0, };
-        char url[URL_LEN] = {0, };
-        char method[20] = {0, };
-        char* tok = NULL;
-        FILE *file;
+        struct in_addr inet_clinet_address; //클라이언트의 주소
+        char response_header[BUFSIZE] = {0, }; //응답 메세지 헤더
+        char buf[BUFSIZE] = {0, }; //클라이언트의 요청 메세지
+        char tmp[BUFSIZE] = {0, }; //요청 메세지 복사 후 토큰으로 분리하기 위한 변수
+        char url[URL_LEN] = {0, }; //클라이언트의 요청 URL 주소
+        char method[20] = {0, }; //클라이언트의 HTTP 요청 메소드
+        char* tok = NULL; //토큰으로 분리할 문자열 포인터
 
-        len = sizeof(client_addr);
-        client_fd = accept(socket_fd, (struct sockaddr*)&client_addr, &len);
+        len = sizeof(client_addr); //클라이언트의 주소 길이 저장
+        client_fd = accept(socket_fd, (struct sockaddr*)&client_addr, &len); //클라이언트로부터 요청 받음
         if(client_fd < 0) {
-            printf("Server : accept failed\n");
-            return 0;
+            printf("Server : accept failed\n"); //연결 요청 실패 시
+            return 0; //프로그램 종료
         }
 
-        inet_clinet_address.s_addr = client_addr.sin_addr.s_addr;
-        printf("[%s : %d] client was connected\n", inet_ntoa(inet_clinet_address), client_addr.sin_port);
-        read(client_fd, buf, BUFSIZE);
+        inet_clinet_address.s_addr = client_addr.sin_addr.s_addr; //클라이언트 주소 정보 저장
+        printf("[%s : %d] client was connected\n", inet_ntoa(inet_clinet_address), client_addr.sin_port); //연결 로그 출력
+        read(client_fd, buf, BUFSIZE); //요청 메세지 read
         strcpy(tmp, buf);
         puts("=============================================");
-        printf("Request from [%s : %d]\n", inet_ntoa(inet_clinet_address), client_addr.sin_port);
-        puts(buf);
+        printf("Request from [%s : %d]\n", inet_ntoa(inet_clinet_address), client_addr.sin_port); //클라이언트의 주소 및 포트번호 출력
+        puts(buf); //받은 요청 메세지 출력
         puts("=============================================");
 
-        tok = strtok(tmp, " ");
-        strcpy(method, tok);
-        if(strcmp(method, "GET") == 0) {
-            tok = strtok(NULL, " ");
-            strcpy(url, tok);
+        tok = strtok(tmp, " "); //HTTP 요청 메소드 받음
+        strcpy(method, tok); //method에 tok 내용 저장
+        if(strcmp(method, "GET") == 0) { //GET 요청인 경우
+            tok = strtok(NULL, " "); //요청한 URL 주소 받음
+            strcpy(url, tok); //url에 tok 내용 저장
         }
 
-        if(strcmp(url, "/favicon.ico") == 0)
+        if(strcmp(url, "/favicon.ico") == 0) //url이 /favicon.ico인 경우 무시
             continue;
-        sendResponse(url, response_header, isNotStart, client_fd);
+        sendResponse(url, response_header, isNotStart, client_fd); //아닌 경우, response 메세지 입력 및 출력
 
-        isNotStart = 1;
-        printf("[%s : %d] client was disconnected\n", inet_ntoa(inet_clinet_address), client_addr.sin_port);
-        close(client_fd);       
+        isNotStart = 1; //클라이언트의 초기 요청이 아님을 저장
+        printf("[%s : %d] client was disconnected\n", inet_ntoa(inet_clinet_address), client_addr.sin_port); //클라이언트와의 연결이 끊김을 출력
+        close(client_fd); //client file descriptor close    
     }
-    close(socket_fd);
-    return 0;
+    close(socket_fd); //socket descriptor close
+    return 0; //프로그램 종료
 }
 
+///////////////////////////////////////////////////////////////////////////////////////
+// sendResponse                                                                      //
+// --------------------------------------------------------------------------------- //
+// Input: char* url -> The URL address requested by the client                       //
+//        char* response_header -> Response message header from the server           //
+//        int isNotStart -> Distinguishing between initial input                     //
+//        int client_fd -> File descriptor of the client                             //
+// output:                                                                           //
+// purpose: Classify whether the address entered as a URL is a directory, plain file // 
+//          , or image, then perform file read to create a response message and send //
+//          it with a header.                                                        //
+///////////////////////////////////////////////////////////////////////////////////////
 void sendResponse(char* url, char* response_header, int isNotStart, int client_fd) {
 
-    FILE *file;
-    DIR *dirp; //DIR 포인터
-    struct dirent *dir; //dirent 구조체
-    int count = 0, isNotFound = 0;
-    char ch;
+    FILE *file; //url로 열 파일
+    struct dirent *dir; //파일 정보를 담을 구조체
+    int count = 0, isNotFound = 0; //파일의 길이, 파일의 존재 여부
     char file_extension[10]; // 파일 확장자를 저장할 배열
     char content_type[30];   // MIME TYPE을 저장할 배열
+    char *response_message = NULL; //서버의 응답 메세지
 
-    if(isNotStart == 0)
-        isNotFound = writeHTMLFile(url);
+    if(isNotStart == 0) //root path로 접근할 때(처음 접속)
+        isNotFound = writeHTMLFile(url); //존재하는 디렉토리인지 확인
     
-    if (isNotFound == 1) {
+    if (isNotFound == 1) { //존재하지 않는 디렉토리라면
 
-        char response_message[MAX_LENGTH];
-        sprintf(response_message, "<h1>Not Found</h1><br>"
+        char error_message[MAX_LENGTH]; //서버의 에러 응답 메세지
+        sprintf(error_message, "<h1>Not Found</h1><br>"
                                   "The request URL %s was not found on this server<br>"
-                                  "HTTP 404 - Not Page Found", url);
-        sprintf(response_header, "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n");
+                                  "HTTP 404 - Not Page Found", url); //에러 메세지 설정
+        sprintf(response_header, "HTTP/1.0 200 OK\r\nServer: 2023 web server\r\nContent-length: %d\r\nContent-Type: text/html\r\n\r\n", 0); //헤더 메세지 설정
 
-        write(client_fd, response_header, strlen(response_header));
-        write(client_fd, response_message, strlen(response_message));
-        return;
+        write(client_fd, response_header, strlen(response_header)); //응답 메세지 헤더 write
+        write(client_fd, error_message, strlen(error_message)); //에러 응답 메세지 write
+        return; //함수 종료
     }
 
+    //이미지 파일인 경우
     if ((fnmatch("*.jpg", url, FNM_CASEFOLD) == 0) || (fnmatch("*.png", url, FNM_CASEFOLD) == 0) || (fnmatch("*.jpeg", url, FNM_CASEFOLD) == 0)) 
-        strcpy(content_type, "image/*");
+        strcpy(content_type, "image/*"); //content-type을 image/*로 설정
 
-    else {
-        char *dot = strrchr(url, '.');
-        if (dot && dot != url)
-            strcpy(file_extension, dot + 1);
+    else { //디렉토리 또는 일반 파일인 경우
 
-        char dirPath[MAX_LENGTH] = {'\0', };
-        getAbsolutePath(url, dirPath);
+        char *dot = strrchr(url, '.'); //확장자 찾기
+        if (dot && dot != url) //확장자가 존재하는 경우
+            strcpy(file_extension, dot + 1); //확장자명을 file_extension에 저장
 
-        if((opendir(dirPath) != NULL) || (isNotStart == 0)) {
-            strcpy(content_type, "text/html");  
-            writeHTMLFile(url);  
+        char dirPath[MAX_LENGTH] = {'\0', }; //파일 또는 디렉토리의 절대 경로
+        getAbsolutePath(url, dirPath); //파일 또는 디렉토리의 절대경로 받아오기
+
+        if((opendir(dirPath) != NULL) || (isNotStart == 0)) { //디렉토리인 경우 또는 root path인 경우
+            strcpy(content_type, "text/html"); //content-type을 text/html로 설정
+            writeHTMLFile(url); //html 파일에 ls 결과 입력
         }
         else
-            strcpy(content_type, "text/plain");
+            strcpy(content_type, "text/plain"); //content-type을 text/plain으로 설정
     }
 
-    if (strcmp(content_type, "text/html") == 0)
-        file = fopen(DIR_FILE_LIST, "r");
+    if (strcmp(content_type, "text/html") == 0) //디렉토리 주소를 입력받은 경우
+        file = fopen("dir_file_list.html", "r"); //html 파일(ls로 결과가 table로 출력) open
     else if(strcmp(content_type, "text/plain") == 0)
         file = fopen(url, "r");
     else
-        file = fopen(url, "rb");
+        file = fopen(url, "rb"); //이미지를 읽어오는 경우
 
-    while ((ch = fgetc(file)) != EOF)
-        count++;
-
-    char *response_message = (char *)malloc(count+1);
-
-    printf("%s: %d -> %ld\n", url, count, strlen(response_message));
+    fseek(file, 0, SEEK_END); //파일의 끝부분으로 이동
+    count = ftell(file); //파일의 크기를 count에 저장
+    fseek(file, 0, SEEK_SET); //파일의 가장 앞으로 이동
     rewind(file);
-    fread(response_message, sizeof(char), count, file);
-    fclose(file);
 
-    sprintf(response_header, "HTTP/1.0 200 OK\r\nContent-Type: %s\r\n\r\n", content_type);
-    write(client_fd, response_header, strlen(response_header));
-    write(client_fd, response_message, strlen(response_message));
+    response_message = (char *)malloc((sizeof(char)) * (count+1)); //count+1의 크기만큼 response_message 크기 지정
+
+    if(strcmp(content_type, "image/*") == 0) //이미지 파일인 경우
+        fread(response_message, 1, count+1, file); //이미지 바이너리 파일 read 내용을 응답 메세지에 저장
+    else //일반 파일 및 디렉토리(html 문서)인 경우
+        fread(response_message, sizeof(char), count+1, file); //파일 read 내용을 응답 메세지에 저장
+
+    fclose(file); //file close
+
+    sprintf(response_header, "HTTP/1.0 200 OK\r\nServer: 2023 web server\r\nContent-length: %d\r\nContent-Type: %s\r\n\r\n", count+1, content_type); //서버 응답 메세지 헤더 설정
+    write(client_fd, response_header, strlen(response_header)); //서버 응답 메세지 헤더 출력
+    write(client_fd, response_message, count+1); //서버 응답 메세지 출력
 }
 
+///////////////////////////////////////////////////////////////////////////////////////
+// writeHTMLFile                                                                     //
+// --------------------------------------------------------------------------------- //
+// Input: char* url -> The URL address requested by the client                       //
+// output:                                                                           //
+// purpose: If the requested file is a directory, input the ls results for the files //
+//          in the directory into an HTML document.                                  //
+///////////////////////////////////////////////////////////////////////////////////////
 int writeHTMLFile(char* url) {
     
-    DIR *dirp; //DIR 포인터
     struct dirent *dir; //dirent 구조체
     char Apath[MAX_LENGTH] = {'\0', }; //working directory의 절대 경로
-    char title[MAX_LENGTH] = "html_ls.html"; // html 문서
+    char title[MAX_LENGTH] = "dir_file_list.html"; // html 문서
     
-    FILE *file = fopen(DIR_FILE_LIST, "w"); //html 파일 생성 및 오픈
+    FILE *file = fopen("dir_file_list.html", "w"); //html 파일 생성 및 오픈
 
     fprintf(file, "<!DOCTYPE html>\n<html>\n<head>\n"); //title 생성
     getAbsolutePath(title, Apath); //html 문서의 절대 경로 받아오기
     fprintf(file, "<title>%s</title>\n</head>\n<body>\n", Apath); //절대경로로 title 설정
 
-    if(url[1] == '\0') {
+    if(url[1] == '\0') { //root path인 경우
 
         fprintf(file, "<h1>Welcome to System Programming Http</h1>\n<br>\n"); //header 작성
         char currentPath[10] = "."; //현재 경로
         listDirFiles(0, 1, 0, 0, 0, currentPath, file); //현재 디렉토리 하위 파일 출력
     }
 
-    else {       
-        char dirPath[MAX_LENGTH] = {'\0', };
+    else { //root path가 아닌 경우
+        char dirPath[MAX_LENGTH] = {'\0', }; //절대경로를 받아올 배열
 
         fprintf(file, "<h1>System Programming Http</h1>\n<br>\n"); //header 작성
 
-        getAbsolutePath(url, dirPath);
-        if(opendir(dirPath) == NULL)
-            return 1;
+        getAbsolutePath(url, dirPath); //dirPath에 url의 절대경로를 받아오기
+        if(opendir(dirPath) == NULL) //url이 디렉토리가 아니라면
+            return 1; //함수 종료
 
-        listDirFiles(0, 1, 0, 0, 0, url, file);
+        listDirFiles(1, 1, 0, 0, 0, url, file); //url이 디렉토리라면 listDirFiles() 실행
     }
 
-    fclose(file);
-    return 0;
+    fclose(file); //file close
+    return 0; //함수 종료
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////
@@ -267,7 +284,7 @@ void listDirFiles(int a_hidden, int l_format, int S_size, int r_reverse, int h_r
     while((dir = readdir(dirp)) != NULL) { //디렉토리 하위 파일들을 읽어들임
 
         joinPathAndFileName(accessFilename, dirPath, dir->d_name);
-        stat(accessFilename, &st); //파일의 절대 경로로 stat() 호출
+        lstat(accessFilename, &st); //파일의 절대 경로로 lstat() 호출
 
         if(a_hidden == 1 || dir->d_name[0] != '.') {
             total += st.st_blocks; //옵션(-a)에 따라 total 계산           
@@ -282,9 +299,15 @@ void listDirFiles(int a_hidden, int l_format, int S_size, int r_reverse, int h_r
     for(int i = 0; i < fileNum; i++) { //파일 개수만큼 반복
         
         fileList[i] = (char*)malloc(sizeof(char) * 300); //동적 할당
-        dir = readdir(dirp);
-        if((strcmp(fileList[i], DIR_FILE_LIST) != 0)) //html 실행 파일이 아니라면
+        dir = readdir(dirp); //디렉토리 내 파일 읽기
+
+        if(strcmp(dir->d_name, "dir_file_list.html") != 0) //html 실행 파일이 아니라면
             strcpy(fileList[i], dir->d_name); //fileList에 파일명 저장
+        else { //html 실행 파일이라면
+            i--; //인덱스 감소
+            realfileNum--; //실제 파일 수 감소
+            fileNum--; //파일 개수 감소
+        }
     }
 
     sortByNameInAscii(fileList, fileNum, 0, r_reverse); //아스키 코드순으로 정렬
@@ -308,7 +331,7 @@ void listDirFiles(int a_hidden, int l_format, int S_size, int r_reverse, int h_r
         fprintf(file, "<th>Last Modified</th>\n</tr>"); // 마지막 수정날짜 열 생성
     }
     else
-        fprintf(file, "</tr>");
+        fprintf(file, "</tr>"); //header raw 닫기
 
     for (int i = 0; i < fileNum; i++) { // 파일 개수만큼 반복
 
@@ -316,9 +339,9 @@ void listDirFiles(int a_hidden, int l_format, int S_size, int r_reverse, int h_r
             continue;
 
         joinPathAndFileName(accessPath, dirPath, fileList[i]); // 파일과 경로를 이어붙이기
-        stat(accessPath, &fileStat);                           // 파일 속성정보 불러옴
+        lstat(accessPath, &fileStat);                           // 파일 속성정보 불러옴
 
-        char color[20] = {'\0',};                            // 파일의 색상 저장할 배열
+        char color[20] = {'\0',}; // 파일의 색상 저장할 배열
         findColor(accessPath, color); // 색 찾기
 
         fprintf(file, "<tr style=\"%s\">\n", color);
@@ -328,9 +351,9 @@ void listDirFiles(int a_hidden, int l_format, int S_size, int r_reverse, int h_r
             printAttributes(fileStat, file, h_readable, color); // 속성 정보 출력
 
         else
-            fprintf(file, "</tr>");
+            fprintf(file, "</tr>"); //raw 닫기
     }
-    fprintf(file, "</table>\n<br>\n");
+    fprintf(file, "</table>\n<br>\n"); //table 닫기
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////
@@ -346,7 +369,7 @@ void getAbsolutePath(char *inputPath, char *absolutePath) {
     getcwd(absolutePath, MAX_LENGTH); //현재 경로 받아옴
 
     if(inputPath[0] != '/') //입력이 절대경로가 아닌 파일이고, /로 시작하지 않을 때 ex) A/*
-        strcat(absolutePath, "/"); // /을 제일 앞에 붙여줌
+        strcat(absolutePath, "/"); // /을 제일 뒤에 붙여줌
     
     if(strstr(inputPath, absolutePath) != NULL) //입력받은 경로가 현재 경로를 포함할 때 ex)/home/Assignment/A/*
         strcpy(absolutePath, inputPath); //입력받은 경로로 절대경로 덮어쓰기
@@ -526,26 +549,26 @@ void printType(struct stat fileStat, FILE *file) {
 
     fprintf(file, "<td>");
 
-    switch (fileStat.st_mode & __S_IFMT) {
-    case __S_IFREG: //regular file
+    switch (fileStat.st_mode & S_IFMT) {
+    case S_IFREG: //regular file
         fprintf(file, "-");
         break;
-    case __S_IFDIR: //directory
+    case S_IFDIR: //directory
         fprintf(file, "d");
         break;
-    case __S_IFLNK: //symbolic link
+    case S_IFLNK: //symbolic link
         fprintf(file, "l");
         break;
-    case __S_IFSOCK: //socket
+    case S_IFSOCK: //socket
         fprintf(file, "s");
         break;
-    case __S_IFIFO: //FIFO(named pipe)
+    case S_IFIFO: //FIFO(named pipe)
         fprintf(file, "p");
         break;
-    case __S_IFCHR: //character device
+    case S_IFCHR: //character device
         fprintf(file, "c");
         break;
-    case __S_IFBLK: //block device
+    case S_IFBLK: //block device
         fprintf(file, "b");
         break;
     default:
@@ -566,12 +589,12 @@ void printType(struct stat fileStat, FILE *file) {
 void findColor(char* fileName, char* color) {
 
     struct stat fileStat; //파일 속성정보
-    stat(fileName, &fileStat); //파일 경로로 속성 정보 받아오기
-    
-    if ((fileStat.st_mode & __S_IFMT) == __S_IFDIR) //디렉토리일 경우
-        strcpy(color, "color: Blue"); //파랑 출력
-    else if ((fileStat.st_mode & __S_IFMT) == __S_IFLNK) //심볼릭 링크일 경우
-        strcpy(color, "color: Green"); //초록 출력
-    else //그 외 파일들의 경우
-        strcpy(color, "color: Red"); //빨강 출력
+    lstat(fileName, &fileStat); //파일 경로로 속성 정보 받아오기
+
+    if ((fileStat.st_mode & S_IFMT) == S_IFDIR)      // 디렉토리일 경우
+        strcpy(color, "color: Blue");                // 파랑 출력
+    else if ((fileStat.st_mode & S_IFMT) == S_IFLNK) // 심볼릭 링크일 경우
+        strcpy(color, "color: Green");               // 초록 출력
+    else                                             // 그 외 파일들의 경우
+        strcpy(color, "color: Red");                 // 빨강 출력
 }
